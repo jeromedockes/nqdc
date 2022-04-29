@@ -98,14 +98,15 @@ def _fit_regression(
 
 
 def _do_fit_neuroquery(
-    tfidf: sparse.csr_matrix,
-    full_voc: pd.DataFrame,
-    voc_mapping: Mapping[str, str],
-    metadata: pd.DataFrame,
-    coordinates: pd.DataFrame,
+    tfidf_dir: Path,
+    extracted_data_dir: Path,
     output_dir: Path,
     n_jobs: int,
 ) -> NeuroQueryModel:
+    metadata = pd.read_csv(extracted_data_dir.joinpath("metadata.csv"))
+    coordinates = pd.read_csv(extracted_data_dir.joinpath("coordinates.csv"))
+    tfidf, full_voc, voc_mapping = _load_tfidf_for_frequent_terms(tfidf_dir)
+
     regressor, kept_tfidf, kept_pmcids, mask_img = _fit_regression(
         tfidf, metadata["pmcid"].values, coordinates, output_dir, n_jobs
     )
@@ -145,15 +146,9 @@ def fit_neuroquery(
     status = _utils.check_steps_status(tfidf_dir, output_dir, __name__)
     if not status["need_run"]:
         return output_dir, 0
-    metadata = pd.read_csv(extracted_data_dir.joinpath("metadata.csv"))
-    coordinates = pd.read_csv(extracted_data_dir.joinpath("coordinates.csv"))
-    tfidf, full_voc, voc_mapping = _load_tfidf_for_frequent_terms(tfidf_dir)
     encoder = _do_fit_neuroquery(
-        tfidf,
-        full_voc,
-        voc_mapping,
-        metadata,
-        coordinates,
+        tfidf_dir,
+        extracted_data_dir,
         output_dir,
         n_jobs,
     )
