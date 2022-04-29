@@ -259,3 +259,20 @@ def get_output_dir(
         output_dir = Path(output_dir)
     output_dir.mkdir(exist_ok=True, parents=True)
     return output_dir
+
+
+def get_extracted_data_dir_from_tfidf_dir(
+    tfidf_dir: Path, extracted_data_dir: Optional[PathLikeOrStr]
+) -> Path:
+    """Find extracted_data_dir if not specified."""
+    if extracted_data_dir is None:
+        dir_name = re.sub(
+            r"^(.*)-voc_.*_vectorizedText",
+            r"\1_extractedData",
+            tfidf_dir.name,
+        )
+        found_data_dir = tfidf_dir.with_name(dir_name)
+    else:
+        found_data_dir = Path(extracted_data_dir)
+    assert_exists(found_data_dir)
+    return found_data_dir
