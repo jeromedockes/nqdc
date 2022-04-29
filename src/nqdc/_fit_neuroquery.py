@@ -39,6 +39,7 @@ _MIN_DOCUMENT_FREQUENCY = 10
 def _load_tfidf_for_frequent_terms(
     tfidf_dir: Path,
 ) -> Tuple[sparse.csr_matrix, pd.DataFrame, pd.DataFrame, Dict[str, str]]:
+    """Load TFIDF and vocabulary, keeping only terms that appear > 10 times."""
     tfidf = sparse.load_npz(str(tfidf_dir.joinpath("merged_tfidf.npz")))
     feature_names = pd.read_csv(
         tfidf_dir.joinpath("feature_names.csv"), header=None
@@ -72,6 +73,7 @@ def _fit_regression(
     output_dir: Path,
     n_jobs: int,
 ) -> Tuple[SmoothedRegression, sparse.csr_matrix, Sequence[int], Nifti1Image]:
+    """Fit the linear regression part of the neuroquery model."""
     tfidf = normalize(tfidf, norm="l2", axis=1, copy=False)
     output_dir.mkdir(exist_ok=True, parents=True)
     memmap_file = output_dir.joinpath("brain_maps.dat")
@@ -103,6 +105,7 @@ def _do_fit_neuroquery(
     output_dir: Path,
     n_jobs: int,
 ) -> NeuroQueryModel:
+    """Helper for `fit_neuroquery` that performs the actual model fitting."""
     metadata = pd.read_csv(extracted_data_dir.joinpath("metadata.csv"))
     coordinates = pd.read_csv(extracted_data_dir.joinpath("coordinates.csv"))
     tfidf, full_voc, voc_mapping = _load_tfidf_for_frequent_terms(tfidf_dir)
@@ -135,7 +138,35 @@ def fit_neuroquery(
     output_dir: Optional[PathLikeOrStr] = None,
     n_jobs: int = 1,
 ) -> Tuple[Path, int]:
-    """Fit a NeuroQuery encoder."""
+    """Fit a NeuroQuery encoder.
+
+    Parameters
+    ----------
+    vectorized_dir
+        The directory containing the vectorized text (TFIDF features). It is
+        the directory created by `nqdc.vectorize_corpus_to_npz` using
+        `extracted_data_dir` as input.
+    extracted_data_dir
+        The directory containing extracted metadata and coordinates. It is a
+        directory created by `nqdc.extract_data_to_csv`. If `None`, this
+        function looks for a sibling directory of the `vectorized_dir` whose
+        name ends with `_extractedData`.
+    output_dir
+        Directory in which to store the NeuroQuery model. If not specified, a
+        sibling directory of `vectorized_dir` whose name ends with
+        `_neuroqueryModel` is created. It will contain a `neuroquery_model`
+        subdirectory that can be loaded with
+        `neuroquery.NeuroQueryModel.from_data_dir`
+
+    Returns
+    -------
+    output_dir
+        The directory in which the neuroquery model is stored.
+    exit_code
+        0 if the neuroquery model was fitted and 1 otherwise. Used by the
+        `nqdc` command-line interface.
+
+    """
     tfidf_dir = Path(tfidf_dir)
     extracted_data_dir = _utils.get_extracted_data_dir_from_tfidf_dir(
         tfidf_dir, extracted_data_dir
