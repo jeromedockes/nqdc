@@ -10,7 +10,6 @@ from scipy import sparse
 import pandas as pd
 from sklearn.preprocessing import normalize
 
-# from nilearn.maskers import NiftiMasker
 from nibabel import Nifti1Image
 from neuroquery import img_utils
 from neuroquery.smoothed_regression import SmoothedRegression
@@ -113,7 +112,10 @@ def _do_fit_neuroquery(
     regressor, kept_tfidf, kept_pmcids, mask_img = _fit_regression(
         tfidf, metadata["pmcid"].values, coordinates, output_dir, n_jobs
     )
-    metadata = metadata.set_index("pmcid").loc[kept_pmcids, :].reset_index()
+    metadata.set_index("pmcid", inplace=True)
+    metadata = metadata.loc[kept_pmcids, :]
+    metadata.index.name = "pmcid"
+    metadata.reset_index(inplace=True)
     vectorizer = TextVectorizer.from_vocabulary(
         full_voc.iloc[:, 0].values,
         full_voc.iloc[:, 1].values,
