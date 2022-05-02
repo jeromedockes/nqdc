@@ -3,14 +3,13 @@ from pathlib import Path
 import logging
 import argparse
 import json
-from typing import Mapping, Tuple, Optional, Sequence, Dict
+from typing import Mapping, Tuple, Optional
 
 import numpy as np
 from scipy import sparse
 import pandas as pd
 from sklearn.preprocessing import normalize
 
-from nibabel import Nifti1Image
 from neuroquery import img_utils
 from neuroquery.smoothed_regression import SmoothedRegression
 from neuroquery.tokenization import TextVectorizer
@@ -32,106 +31,153 @@ _HELP = (
     "https://github.com/neuroquery/neuroquery ."
 )
 
-_MIN_DOCUMENT_FREQUENCY = 10
 
+class _NeuroQueryFit:
+    """Helper class to load data and fit the NeuroQuery model.
 
-def _load_tfidf_for_frequent_terms(
-    tfidf_dir: Path,
-) -> Tuple[sparse.csr_matrix, pd.DataFrame, pd.DataFrame, Dict[str, str]]:
-    """Load TFIDF and vocabulary, keeping only terms that appear > 10 times."""
-    tfidf = sparse.load_npz(str(tfidf_dir.joinpath("merged_tfidf.npz")))
-    feature_names = pd.read_csv(
-        tfidf_dir.joinpath("feature_names.csv"), header=None
-    )
-    full_voc = pd.read_csv(tfidf_dir.joinpath("vocabulary.csv"), header=None)
-    voc_mapping = json.loads(
-        tfidf_dir.joinpath(
-            "vocabulary.csv_voc_mapping_identity.json"
-        ).read_text("utf-8")
-    )
-    kept = np.asarray(
-        (tfidf > 0).sum(axis=0) > _MIN_DOCUMENT_FREQUENCY
-    ).ravel()
-    new_tfidf = tfidf[:, kept]
-    new_feat_names = feature_names[kept]
-    new_feat_names_set = set(new_feat_names.iloc[:, 0].values)
-    new_voc_mapping = {
-        source: target
-        for (source, target) in voc_mapping.items()
-        if target in new_feat_names_set
-    }
-    new_voc_set = new_feat_names_set.union(new_voc_mapping.keys())
-    new_full_voc = full_voc[full_voc.iloc[:, 0].isin(new_voc_set)]
-    return new_tfidf, new_full_voc, new_voc_mapping
+    After creating a _NeuroQueryFit, calling `fit` will
+    - load the data
+    - compute the article brain maps
+    - reindex metadata, tfidf and brain maps so they are indexed by the same
+      pmcids
+    - drop the terms that are too rare
+    - fit and return the NeuroQueryModel
+    """
 
+    _MIN_DOCUMENT_FREQUENCY = 10
 
-def _fit_regression(
-    tfidf: sparse.csr_matrix,
-    pmcids: Sequence[int],
-    coordinates: pd.DataFrame,
-    output_dir: Path,
-    n_jobs: int,
-) -> Tuple[SmoothedRegression, sparse.csr_matrix, Sequence[int], Nifti1Image]:
-    """Fit the linear regression part of the neuroquery model."""
-    tfidf = normalize(tfidf, norm="l2", axis=1, copy=False)
-    output_dir.mkdir(exist_ok=True, parents=True)
-    memmap_file = output_dir.joinpath("brain_maps.dat")
-    brain_maps, masker = img_utils.coordinates_to_maps(
-        coordinates,
-        target_affine=(4, 4, 4),
-        id_column="pmcid",
-        output_memmap_file=memmap_file,
-        n_jobs=n_jobs,
-    )
-    brain_maps = brain_maps[(brain_maps.values != 0).any(axis=1)]
-    kept_pmcids = brain_maps.index.intersection(pmcids)
-    rindex = pd.Series(np.arange(len(pmcids)), index=pmcids)
-    kept_tfidf = tfidf.A[rindex.loc[kept_pmcids].values, :]
-    brain_maps = brain_maps.loc[kept_pmcids, :]
-    regressor = SmoothedRegression()
-    regressor.fit(kept_tfidf, brain_maps.values)
-    return (
-        regressor,
-        sparse.csr_matrix(kept_tfidf),
-        kept_pmcids,
-        masker.mask_img_,
-    )
+    def __init__(
+        self,
+        tfidf_dir: Path,
+        extracted_data_dir: Path,
+        output_dir: Path,
+        n_jobs: int,
+    ) -> None:
+        self.tfidf_dir = tfidf_dir
+        self.extracted_data_dir = extracted_data_dir
+        self.output_dir = output_dir
+        self.n_jobs = n_jobs
+        self.metadata = None
+        self.tfidf = None
+        self.coordinates = None
+        self.brain_maps = None
+        self.full_voc = None
+        self.voc_mapping = None
+        self.feature_names = None
+        self.memmap_file = None
+        self.mask_img = None
+        self.encoder = None
 
+    def _load_tfidf(self) -> None:
+        self.tfidf = sparse.load_npz(
+            str(self.tfidf_dir.joinpath("merged_tfidf.npz"))
+        )
+        self.feature_names = pd.read_csv(
+            self.tfidf_dir.joinpath("feature_names.csv"), header=None
+        )
+        self.full_voc = pd.read_csv(
+            self.tfidf_dir.joinpath("vocabulary.csv"), header=None
+        )
+        self.voc_mapping = json.loads(
+            self.tfidf_dir.joinpath(
+                "vocabulary.csv_voc_mapping_identity.json"
+            ).read_text("utf-8")
+        )
 
-def _do_fit_neuroquery(
-    tfidf_dir: Path,
-    extracted_data_dir: Path,
-    output_dir: Path,
-    n_jobs: int,
-) -> NeuroQueryModel:
-    """Helper for `fit_neuroquery` that performs the actual model fitting."""
-    metadata = pd.read_csv(extracted_data_dir.joinpath("metadata.csv"))
-    coordinates = pd.read_csv(extracted_data_dir.joinpath("coordinates.csv"))
-    tfidf, full_voc, voc_mapping = _load_tfidf_for_frequent_terms(tfidf_dir)
+    def _load_data(self) -> None:
+        self.metadata = pd.read_csv(
+            self.extracted_data_dir.joinpath("metadata.csv")
+        )
+        self.coordinates = pd.read_csv(
+            self.extracted_data_dir.joinpath("coordinates.csv")
+        )
+        self._load_tfidf()
 
-    regressor, kept_tfidf, kept_pmcids, mask_img = _fit_regression(
-        tfidf, metadata["pmcid"].values, coordinates, output_dir, n_jobs
-    )
-    metadata.set_index("pmcid", inplace=True)
-    metadata = metadata.loc[kept_pmcids, :]
-    metadata.index.name = "pmcid"
-    metadata.reset_index(inplace=True)
-    vectorizer = TextVectorizer.from_vocabulary(
-        full_voc.iloc[:, 0].values,
-        full_voc.iloc[:, 1].values,
-        voc_mapping=voc_mapping,
-        norm="l2",
-    )
-    encoder = NeuroQueryModel(
-        vectorizer,
-        regressor,
-        mask_img,
-        corpus_info={
-            "tfidf": kept_tfidf,
-            "metadata": metadata,
-        },
-    )
-    return encoder
+    def _compute_brain_maps(self) -> None:
+        self.memmap_file = self.output_dir.joinpath("brain_maps.dat")
+        brain_maps, masker = img_utils.coordinates_to_maps(
+            self.coordinates,
+            target_affine=(4, 4, 4),
+            id_column="pmcid",
+            output_memmap_file=self.memmap_file,
+            n_jobs=self.n_jobs,
+        )
+        brain_maps = brain_maps[(brain_maps.values != 0).any(axis=1)]
+        self.brain_maps = brain_maps
+        self.mask_img = masker.mask_img_
+
+    def _set_pmcids(self) -> None:
+        """Reindex metadata, tfidf and brain maps.
+
+        After this, their rows match (correspond to the same pmcids).
+        """
+        all_pmcids = self.metadata["pmcid"].values
+        pmcids = self.brain_maps.index.intersection(all_pmcids)
+
+        self.brain_maps = self.brain_maps.loc[pmcids, :]
+
+        rindex = pd.Series(np.arange(len(all_pmcids)), index=all_pmcids)
+        self.tfidf = sparse.csr_matrix(
+            self.tfidf.A[rindex.loc[pmcids].values, :]
+        )
+
+        self.metadata.set_index("pmcid", inplace=True)
+        # false positive: pylint thinks read_csv returns a TextFileReader
+        # pylint: disable-next=no-member
+        self.metadata = self.metadata.loc[pmcids, :]
+        # pylint: disable-next=no-member
+        self.metadata.index.name = "pmcid"
+        # pylint: disable-next=no-member
+        self.metadata.reset_index(inplace=True)
+
+    def _filter_out_rare_terms(self) -> None:
+        """Drop very rare terms, update tfidf and vocabulary"""
+        kept = np.asarray(
+            (self.tfidf > 0).sum(axis=0) > self._MIN_DOCUMENT_FREQUENCY
+        ).ravel()
+        self.tfidf = self.tfidf[:, kept]
+        self.feature_names = self.feature_names[kept]
+        feat_names_set = set(self.feature_names.iloc[:, 0].values)
+        self.voc_mapping = {
+            source: target
+            for (source, target) in self.voc_mapping.items()
+            if target in feat_names_set
+        }
+        voc_set = feat_names_set.union(self.voc_mapping.keys())
+        self.full_voc = self.full_voc[self.full_voc.iloc[:, 0].isin(voc_set)]
+
+    def _fit_regression(self) -> None:
+        """Actual fitting of the NeuroQuerymodel."""
+        normalize(self.tfidf, norm="l2", axis=1, copy=False)
+        regressor = SmoothedRegression()
+        regressor.fit(self.tfidf, self.brain_maps.values)
+        # false positive: pylint thinks read_csv returns a TextFileReader
+        vectorizer = TextVectorizer.from_vocabulary(
+            # pylint: disable-next=no-member
+            self.full_voc.iloc[:, 0].values,
+            # pylint: disable-next=no-member
+            self.full_voc.iloc[:, 1].values,
+            voc_mapping=self.voc_mapping,
+            norm="l2",
+        )
+        self.encoder = NeuroQueryModel(
+            vectorizer,
+            regressor,
+            self.mask_img,
+            corpus_info={
+                "tfidf": self.tfidf,
+                "metadata": self.metadata,
+            },
+        )
+
+    def fit(self) -> NeuroQueryModel:
+        """Return a fitted NeuroQueryModel."""
+        self._load_data()
+        self._compute_brain_maps()
+        self._set_pmcids()
+        self._filter_out_rare_terms()
+        self._fit_regression()
+        return self.encoder
 
 
 def fit_neuroquery(
@@ -179,12 +225,12 @@ def fit_neuroquery(
     status = _utils.check_steps_status(tfidf_dir, output_dir, __name__)
     if not status["need_run"]:
         return output_dir, 0
-    encoder = _do_fit_neuroquery(
+    encoder = _NeuroQueryFit(
         tfidf_dir,
         extracted_data_dir,
         output_dir,
         n_jobs,
-    )
+    ).fit()
     model_dir = output_dir.joinpath("neuroquery_model")
     encoder.to_data_dir(model_dir)
     is_complete = bool(status["previous_step_complete"])
