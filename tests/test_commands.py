@@ -5,6 +5,7 @@ from unittest.mock import Mock, MagicMock
 import importlib_metadata
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from nqdc import _commands, _vectorization, _nimare
@@ -119,8 +120,18 @@ def test_full_pipeline_command(
 
 
 def test_steps(
-    tmp_path, nq_datasets_mock, entrez_mock, test_data_dir, mock_nimare
+    tmp_path,
+    nq_datasets_mock,
+    entrez_mock,
+    test_data_dir,
+    mock_nimare,
+    monkeypatch,
 ):
+    monkeypatch.setattr(
+        "nqdc._fit_neuroquery._NeuroQueryFit._MIN_DOCUMENT_FREQUENCY", 1
+    )
+    monkeypatch.setattr("nqdc._fit_neuroquery.SmoothedRegression", MagicMock())
+    monkeypatch.setattr("nqdc._fit_neuroquery.normalize", MagicMock())
     query_file = tmp_path.joinpath("query")
     query_file.write_text("fMRI[abstract]", "utf-8")
     _commands.nqdc_command(["download", str(tmp_path), "-f", str(query_file)])
@@ -152,6 +163,13 @@ def test_steps(
     assert (
         len(np.loadtxt(vectorized_dir.joinpath("pmcid.txt"), dtype=int)) == 7
     )
+    _commands.nqdc_command(["fit_neuroquery", str(vectorized_dir)])
+    nq_dir = query_dir.joinpath(
+        f"subset_allArticles-voc_{voc_checksum}_neuroqueryModel",
+        "neuroquery_model",
+    )
+    voc = pd.read_csv(nq_dir.joinpath("vocabulary.csv"))
+    assert len(voc) == 3
     _commands.nqdc_command(
         ["extract_labelbuddy_data", str(extracted_data_dir)]
     )

@@ -57,7 +57,7 @@ def test_make_labelbuddy_documents(
     ) as f:
         docs = [json.loads(doc_json) for doc_json in f]
     assert len(docs) == expected_part_size
-    assert "Abstract\n The abstract of the article" in docs[1]["text"]
+    assert "Abstract\n The abstract of the article" in docs[2]["text"]
     assert [d["meta"]["chapter"] for d in docs] == [
         i // 2 + 1 for i in range(len(docs))
     ]
