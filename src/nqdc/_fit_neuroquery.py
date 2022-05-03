@@ -1,14 +1,18 @@
-"""'fit_neuroquery' step: fit a neuroquery.NeuroQueryModel"""
+"""'fit_neuroquery' step: fit a neuroquery.NeuroQueryModel."""
+import contextlib
 from pathlib import Path
 import logging
 import argparse
+import shutil
+import tempfile
 import json
-from typing import Mapping, Tuple, Optional
+from typing import Mapping, Tuple, Optional, Dict
 
 import numpy as np
 from scipy import sparse
 import pandas as pd
 from sklearn.preprocessing import normalize
+from nibabel import Nifti1Image
 
 from neuroquery import img_utils
 from neuroquery.smoothed_regression import SmoothedRegression
@@ -50,23 +54,22 @@ class _NeuroQueryFit:
         self,
         tfidf_dir: Path,
         extracted_data_dir: Path,
-        output_dir: Path,
         n_jobs: int,
     ) -> None:
         self.tfidf_dir = tfidf_dir
         self.extracted_data_dir = extracted_data_dir
-        self.output_dir = output_dir
         self.n_jobs = n_jobs
-        self.metadata = None
-        self.tfidf = None
-        self.coordinates = None
-        self.brain_maps = None
-        self.full_voc = None
-        self.voc_mapping = None
-        self.feature_names = None
-        self.memmap_file = None
-        self.mask_img = None
-        self.encoder = None
+        self.metadata: Optional[pd.DataFrame] = None
+        self.tfidf: Optional[sparse.csr_matrix] = None
+        self.coordinates: Optional[pd.DataFrame] = None
+        self.brain_maps: Optional[np.memmap] = None
+        self.brain_maps_pmcids: Optional[np.ndarray] = None
+        self.full_voc: Optional[pd.DataFrame] = None
+        self.voc_mapping: Optional[Dict[str, str]] = None
+        self.feature_names: Optional[pd.DataFrame] = None
+        self.mask_img: Optional[Nifti1Image] = None
+        self.encoder: Optional[NeuroQueryModel] = None
+        self.context: Optional[contextlib.ExitStack] = None
 
     def _load_tfidf(self) -> None:
         self.tfidf = sparse.load_npz(
@@ -94,16 +97,23 @@ class _NeuroQueryFit:
         self._load_tfidf()
 
     def _compute_brain_maps(self) -> None:
-        self.memmap_file = self.output_dir.joinpath("brain_maps.dat")
-        brain_maps, masker = img_utils.coordinates_to_maps(
+        assert self.context is not None
+
+        tmp_dir = self.context.enter_context(tempfile.TemporaryDirectory())
+        memmap_file = str(Path(tmp_dir).joinpath("brain_maps.dat"))
+        _LOG.debug("Computing article maps for NeuroQuery model.")
+        brain_maps, pmcids, masker = img_utils.coordinates_to_memmapped_maps(
             self.coordinates,
             target_affine=(4, 4, 4),
             id_column="pmcid",
-            output_memmap_file=self.memmap_file,
+            output_memmap_file=memmap_file,
             n_jobs=self.n_jobs,
+            context=self.context,
         )
-        brain_maps = brain_maps[(brain_maps.values != 0).any(axis=1)]
-        self.brain_maps = brain_maps
+        _LOG.debug("Done computing article maps.")
+        non_empty = (brain_maps != 0).any(axis=1)
+        self.brain_maps_pmcids = pmcids[non_empty]
+        self.brain_maps = brain_maps[non_empty]
         self.mask_img = masker.mask_img_
 
     def _set_pmcids(self) -> None:
@@ -111,12 +121,22 @@ class _NeuroQueryFit:
 
         After this, their rows match (correspond to the same pmcids).
         """
-        all_pmcids = self.metadata["pmcid"].values
-        pmcids = self.brain_maps.index.intersection(all_pmcids)
+        assert self.metadata is not None
+        assert self.brain_maps is not None
+        assert self.brain_maps_pmcids is not None
+        assert self.tfidf is not None
 
-        self.brain_maps = self.brain_maps.loc[pmcids, :]
+        tfidf_pmcids = self.metadata["pmcid"].values
+        pmcids = np.asarray(
+            sorted(set(self.brain_maps_pmcids).intersection(tfidf_pmcids))
+        )
+        maps_rindex = pd.Series(
+            np.arange(len(self.brain_maps_pmcids)),
+            index=self.brain_maps_pmcids,
+        )
+        self.brain_maps = self.brain_maps[maps_rindex.loc[pmcids].values, :]
 
-        rindex = pd.Series(np.arange(len(all_pmcids)), index=all_pmcids)
+        rindex = pd.Series(np.arange(len(tfidf_pmcids)), index=tfidf_pmcids)
         self.tfidf = sparse.csr_matrix(
             self.tfidf.A[rindex.loc[pmcids].values, :]
         )
@@ -131,7 +151,12 @@ class _NeuroQueryFit:
         self.metadata.reset_index(inplace=True)
 
     def _filter_out_rare_terms(self) -> None:
-        """Drop very rare terms, update tfidf and vocabulary"""
+        """Drop very rare terms, update tfidf and vocabulary."""
+        assert self.tfidf is not None
+        assert self.full_voc is not None
+        assert self.feature_names is not None
+        assert self.voc_mapping is not None
+
         kept = np.asarray(
             (self.tfidf > 0).sum(axis=0) > self._MIN_DOCUMENT_FREQUENCY
         ).ravel()
@@ -148,9 +173,13 @@ class _NeuroQueryFit:
 
     def _fit_regression(self) -> None:
         """Actual fitting of the NeuroQuerymodel."""
+        assert self.full_voc is not None
+
         normalize(self.tfidf, norm="l2", axis=1, copy=False)
         regressor = SmoothedRegression()
-        regressor.fit(self.tfidf, self.brain_maps.values)
+        _LOG.debug(f"Fitting NeuroQuery on {self.tfidf.shape[0]} samples.")
+        regressor.fit(self.tfidf, self.brain_maps)
+        _LOG.debug("Done fitting NeuroQuery model.")
         # false positive: pylint thinks read_csv returns a TextFileReader
         vectorizer = TextVectorizer.from_vocabulary(
             # pylint: disable-next=no-member
@@ -172,12 +201,18 @@ class _NeuroQueryFit:
 
     def fit(self) -> NeuroQueryModel:
         """Return a fitted NeuroQueryModel."""
-        self._load_data()
-        self._compute_brain_maps()
-        self._set_pmcids()
-        self._filter_out_rare_terms()
-        self._fit_regression()
+        with contextlib.ExitStack() as self.context:
+            self._load_data()
+            self._compute_brain_maps()
+            self._set_pmcids()
+            self._filter_out_rare_terms()
+            self._fit_regression()
         return self.encoder
+
+
+def _copy_static_files(output_dir: Path) -> None:
+    module_data = _utils.get_package_data_dir().joinpath("_fit_neuroquery")
+    shutil.copy(module_data.joinpath("app.py"), output_dir)
 
 
 def fit_neuroquery(
@@ -225,14 +260,17 @@ def fit_neuroquery(
     status = _utils.check_steps_status(tfidf_dir, output_dir, __name__)
     if not status["need_run"]:
         return output_dir, 0
+    _LOG.info(f"Training a NeuroQuery encoder with data from {tfidf_dir} "
+              f"and {extracted_data_dir}.")
     encoder = _NeuroQueryFit(
         tfidf_dir,
         extracted_data_dir,
-        output_dir,
         n_jobs,
     ).fit()
     model_dir = output_dir.joinpath("neuroquery_model")
     encoder.to_data_dir(model_dir)
+    _LOG.info("NeuroQuery model saved in {model_dir}.")
+    _copy_static_files(output_dir)
     is_complete = bool(status["previous_step_complete"])
     _utils.write_info(output_dir, name=_STEP_NAME, is_complete=is_complete)
     return output_dir, 0

@@ -48,7 +48,8 @@ brains, auditory cortex, memory, memory</xsl:text>
   <xsl:template
       match="/pmc-articleset/article[position()=last()]/body">
     <xsl:copy>
-    <xsl:text>The text of the last article has no coordinates, brains</xsl:text>
+    <xsl:text>The text of the last article
+has no coordinates, brains</xsl:text>
     <table-wrap>
     <table>
     <tr><th>a</th><th>b</th></tr>

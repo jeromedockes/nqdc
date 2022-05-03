@@ -86,6 +86,7 @@ def test_fit_neuroquery(extracted_data_dir, tfidf_dir):
         str(output_dir.joinpath("neuroquery_model"))
     )
     model("term 3 term 45 term 10000")
+    assert output_dir.joinpath("app.py").is_file()
 
 
 def test_does_not_rerun(tmp_path, monkeypatch):
