@@ -212,7 +212,8 @@ class _NeuroQueryFit:
 
 def _copy_static_files(output_dir: Path) -> None:
     module_data = _utils.get_package_data_dir().joinpath("_fit_neuroquery")
-    shutil.copy(module_data.joinpath("app.py"), output_dir)
+    for file_name in "app.py", "requirements.txt", "README.md":
+        shutil.copy(module_data.joinpath(file_name), output_dir)
 
 
 def fit_neuroquery(
@@ -260,8 +261,10 @@ def fit_neuroquery(
     status = _utils.check_steps_status(tfidf_dir, output_dir, __name__)
     if not status["need_run"]:
         return output_dir, 0
-    _LOG.info(f"Training a NeuroQuery encoder with data from {tfidf_dir} "
-              f"and {extracted_data_dir}.")
+    _LOG.info(
+        f"Training a NeuroQuery encoder with data from {tfidf_dir} "
+        f"and {extracted_data_dir}."
+    )
     encoder = _NeuroQueryFit(
         tfidf_dir,
         extracted_data_dir,
