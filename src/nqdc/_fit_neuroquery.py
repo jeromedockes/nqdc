@@ -272,7 +272,7 @@ def fit_neuroquery(
     ).fit()
     model_dir = output_dir.joinpath("neuroquery_model")
     encoder.to_data_dir(model_dir)
-    _LOG.info("NeuroQuery model saved in {model_dir}.")
+    _LOG.info(f"NeuroQuery model saved in {model_dir}.")
     _copy_static_files(output_dir)
     is_complete = bool(status["previous_step_complete"])
     _utils.write_info(output_dir, name=_STEP_NAME, is_complete=is_complete)
