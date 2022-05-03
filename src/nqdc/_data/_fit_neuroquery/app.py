@@ -86,12 +86,13 @@ def query():
     ).to_html()
     similar_docs = result["similar_documents"].head(20).copy()
     similar_docs["title"] = title_as_link(similar_docs)
-    similar_docs_table = (
-        similar_docs[["title", "similarity"]]
-        .style.hide_index()
-        .bar(color="lightgreen")
-        .to_html()
-    )
+    docs_style = similar_docs[["title", "similarity"]].style
+    try:
+        docs_style = docs_style.hide(axis="index")
+    except AttributeError:
+        # pandas older than 1.4
+        docs_style = docs_style.hide_index()
+    similar_docs_table = docs_style.bar(color="lightgreen").to_html()
     return flask.render_template_string(
         template,
         term=term,

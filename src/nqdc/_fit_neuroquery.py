@@ -14,13 +14,12 @@ import pandas as pd
 from sklearn.preprocessing import normalize
 from nibabel import Nifti1Image
 
-from neuroquery import img_utils
 from neuroquery.smoothed_regression import SmoothedRegression
 from neuroquery.tokenization import TextVectorizer
 from neuroquery.encoding import NeuroQueryModel
 
 from nqdc._typing import PathLikeOrStr, BaseProcessingStep, ArgparseActions
-from nqdc import _utils
+from nqdc import _utils, _img_utils
 
 
 _LOG = logging.getLogger(__name__)
@@ -102,7 +101,7 @@ class _NeuroQueryFit:
         tmp_dir = self.context.enter_context(tempfile.TemporaryDirectory())
         memmap_file = str(Path(tmp_dir).joinpath("brain_maps.dat"))
         _LOG.debug("Computing article maps for NeuroQuery model.")
-        brain_maps, pmcids, masker = img_utils.coordinates_to_memmapped_maps(
+        brain_maps, pmcids, masker = _img_utils.coordinates_to_memmapped_maps(
             self.coordinates,
             target_affine=(4, 4, 4),
             id_column="pmcid",
@@ -174,6 +173,7 @@ class _NeuroQueryFit:
     def _fit_regression(self) -> None:
         """Actual fitting of the NeuroQuerymodel."""
         assert self.full_voc is not None
+        assert self.tfidf is not None
 
         normalize(self.tfidf, norm="l2", axis=1, copy=False)
         regressor = SmoothedRegression()
