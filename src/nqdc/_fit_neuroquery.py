@@ -29,7 +29,7 @@ _HELP = (
     "Fit a NeuroQuery encoder on the downloaded data. "
     "Note this can be a more computationally intensive step for "
     "large datasets. Moreover, it will not yield "
-    "good results for small datasets (less than ~10K articles with "
+    "good results for small datasets (less than ~ 5 to 10K articles with "
     "coordinates). See details about neuroquery at neuroquery.org and "
     "https://github.com/neuroquery/neuroquery ."
 )

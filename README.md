@@ -402,6 +402,8 @@ in [the NeuroQuery paper](https://elifesciences.org/articles/53385) and the
 documentation for the [neuroquery
 package](https://github.com/neuroquery/neuroquery).
 
+Note: for this model to give good results a large dataset is needed, ideally close to 10,000 articles (with coordinates).
+
 We pass the `_vectorizedText` directory created by `nqdc vectorize`:
 ```
 nqdc fit_neuroquery nqdc_data/query-10c72245c52d7d4e6f535e2bcffb2572/subset_articlesWithCoords-voc_e6f7a7e9c6ebc4fb81118ccabfee8bd7_vectorizedText
